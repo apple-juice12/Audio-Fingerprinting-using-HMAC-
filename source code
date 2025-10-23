@@ -1,0 +1,155 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext
+import subprocess
+import json
+import base64
+import numpy as np
+from PIL import Image, ImageTk
+import hashlib
+import hmac
+
+SECRET_KEY = b"your-very-secret-key-here"
+
+def decode_chromaprint_fp(fp_str):
+    fp_str = fp_str.strip().replace('\n', '').replace('\r', '')
+    fp_str = fp_str.replace('-', '+').replace('_', '/')
+    missing_padding = len(fp_str) % 4
+    if missing_padding != 0:
+        fp_str += '=' * (4 - missing_padding)
+    return base64.b64decode(fp_str)
+
+def compute_hmac_signature(raw_bytes: bytes, fingerprint: str) -> str:
+    raw_hash = hashlib.sha256(raw_bytes).hexdigest()
+    combined = (raw_hash + "|" + fingerprint).encode('utf-8')
+    signature = hmac.new(SECRET_KEY, combined, hashlib.sha256).hexdigest()
+    return signature
+
+def generate_chromaprint_visual():
+    file_path = file_path_var.get()
+    if not file_path:
+        messagebox.showwarning("No File", "Please select an audio file first.")
+        return
+
+    text_output.delete("1.0", tk.END)
+    text_output.insert(tk.END, "Generating Chromaprint fingerprint...\n")
+
+    try:
+        FPCALC_PATH = r"C:\Program Files\Chromaprint\fpcalc.exe"
+        result = subprocess.run(
+            [FPCALC_PATH, "-json", file_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip())
+
+        fp_data = json.loads(result.stdout)
+        duration = int(fp_data["duration"])
+        fp_raw = fp_data["fingerprint"]
+
+        with open(file_path, "rb") as f:
+            raw_bytes = f.read()
+
+        signature = compute_hmac_signature(raw_bytes, fp_raw)
+
+        text_output.insert(tk.END, f"Duration: {duration}s\n")
+        text_output.insert(tk.END, f"Chromaprint fingerprint length: {len(fp_raw)} chars\n")
+        text_output.insert(tk.END, f"HMAC signature:\n{signature}\n\n")
+
+        decoded = decode_chromaprint_fp(fp_raw)
+        bits = np.unpackbits(np.frombuffer(decoded, dtype=np.uint8))
+
+        width = 128
+        height = len(bits) // width
+        bits = bits[:width * height]
+        grid = bits.reshape((height, width)) * 255
+
+        img = Image.fromarray(grid.astype(np.uint8), mode="L")
+        img = img.resize((width * 3, height * 3), Image.NEAREST)
+        img_tk = ImageTk.PhotoImage(img)
+
+        img_label.configure(image=img_tk)
+        img_label.image = img_tk
+
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+def verify_signature():
+    file_path = file_path_var.get()
+    sig = sig_entry.get().strip()
+    fp = fp_entry.get().strip()
+    if not file_path or not sig or not fp:
+        messagebox.showwarning("Missing data", "Please provide file, signature, and fingerprint to verify.")
+        return
+
+    try:
+        with open(file_path, "rb") as f:
+            raw_bytes = f.read()
+        computed_sig = compute_hmac_signature(raw_bytes, fp)
+        if computed_sig == sig:
+            messagebox.showinfo("Verification Result", "Signature is VALID. File and fingerprint match.")
+        else:
+            messagebox.showerror("Verification Result", "Signature is INVALID. File or fingerprint does not match.")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+def browse_file():
+    path = filedialog.askopenfilename(
+        title="Select Audio File",
+        filetypes=[("Audio Files", "*.mp3 *.wav *.flac *.ogg *.m4a"), ("All Files", "*.*")]
+    )
+    if path:
+        file_path_var.set(path)
+
+root = tk.Tk()
+root.title("Chromaprint + HMAC Signature GUI")
+root.geometry("800x700")
+
+frame = tk.Frame(root, padx=10, pady=10)
+frame.pack(fill="both", expand=True)
+
+# Configure grid weights for scaling
+frame.columnconfigure(1, weight=1)
+frame.rowconfigure(2, weight=1)
+frame.rowconfigure(3, weight=1)
+
+tk.Label(frame, text="Audio File:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+file_path_var = tk.StringVar()
+file_entry = tk.Entry(frame, textvariable=file_path_var)
+file_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+tk.Button(frame, text="Browse", command=browse_file).grid(row=0, column=2, sticky="ew", padx=5, pady=5)
+
+gen_btn = tk.Button(
+    frame,
+    text="Generate Chromaprint + Signature",
+    command=generate_chromaprint_visual,
+    bg="#4CAF50",
+    fg="white"
+)
+gen_btn.grid(row=1, column=0, columnspan=3, sticky="ew", pady=10, padx=5)
+
+img_label = tk.Label(frame, bg="black")
+img_label.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=10, padx=5)
+
+text_output = scrolledtext.ScrolledText(frame, width=70, height=10)
+text_output.grid(row=3, column=0, columnspan=3, sticky="nsew", pady=5, padx=5)
+
+tk.Label(frame, text="Fingerprint (for verification):").grid(row=4, column=0, sticky="w", padx=5, pady=5)
+fp_entry = tk.Entry(frame)
+fp_entry.grid(row=4, column=1, columnspan=2, sticky="ew", padx=5, pady=5)
+
+tk.Label(frame, text="Signature (for verification):").grid(row=5, column=0, sticky="w", padx=5, pady=5)
+sig_entry = tk.Entry(frame)
+sig_entry.grid(row=5, column=1, columnspan=2, sticky="ew", padx=5, pady=5)
+
+verify_btn = tk.Button(
+    frame,
+    text="Verify Signature",
+    command=verify_signature,
+    bg="#2196F3",
+    fg="white"
+)
+verify_btn.grid(row=6, column=0, columnspan=3, sticky="ew", pady=10, padx=5)
+
+root.mainloop()
